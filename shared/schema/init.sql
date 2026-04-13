@@ -1,9 +1,3 @@
--- Create the database
-CREATE DATABASE IF NOT EXISTS benchdb;
-
--- Use the database
-\c benchdb;
-
 -- processed_jobs table: idempotency enforced by UNIQUE constraint on job_id
 CREATE TABLE IF NOT EXISTS processed_jobs (
     id SERIAL PRIMARY KEY,
