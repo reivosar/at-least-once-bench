@@ -89,7 +89,7 @@ for framework in "${FRAMEWORK_LIST[@]}"; do
         echo "Running: $TEST_NAME"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-        CMD="go run $RUNNER \
+        CMD="CGO_ENABLED=0 go run $RUNNER \
             --framework=$framework \
             --scenario=$scenario \
             --duration=${DURATION}s \
