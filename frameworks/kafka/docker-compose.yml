@@ -21,7 +21,7 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
       CLUSTER_ID: MkwNYQ4TT3yt7e4ct6e1Rw
     ports:
-      - "9092:9092"
+      - "${KAFKA_PORT:-9092}:9092"
     healthcheck:
       test: ["CMD", "kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:29092"]
       interval: 5s
@@ -38,9 +38,9 @@ services:
       KAFKA_BROKERS: "kafka:29092"
       KAFKA_TOPIC: "bench-jobs"
       KAFKA_GROUP_ID: "bench-group"
-      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
-      DOWNSTREAM_URL: "http://downstream:${DOWNSTREAM_PORT}"
-      METRICS_PORT: "${KAFKA_WORKER_METRICS_PORT}"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-bench}:${POSTGRES_PASSWORD:-benchpass}@postgres:5432/${POSTGRES_DB:-benchdb}?sslmode=disable"
+      DOWNSTREAM_URL: "http://downstream:${DOWNSTREAM_PORT:-8080}"
+      METRICS_PORT: "${KAFKA_WORKER_METRICS_PORT:-9096}"
     depends_on:
       kafka:
         condition: service_healthy
