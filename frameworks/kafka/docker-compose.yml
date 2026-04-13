@@ -1,0 +1,48 @@
+version: '3.8'
+
+networks:
+  bench-net:
+    external: true
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.7.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+      CLUSTER_ID: MkwNYQ4TT3yt7e4ct6e1Rw
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:29092"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bench-net
+
+  kafka-worker:
+    build:
+      context: ../..
+      dockerfile: frameworks/kafka/worker/Dockerfile
+    environment:
+      KAFKA_BROKERS: "kafka:29092"
+      KAFKA_TOPIC: "bench-jobs"
+      KAFKA_GROUP_ID: "bench-group"
+      DATABASE_URL: "postgres://bench:benchpass@postgres:5432/benchdb?sslmode=disable"
+      DOWNSTREAM_URL: "http://downstream:8080"
+      METRICS_PORT: "9092"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - bench-net
