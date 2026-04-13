@@ -8,9 +8,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FRAMEWORKS="${1#--frameworks=}"
 FRAMEWORKS="${FRAMEWORKS:-rabbitmq,nats,kafka,temporal}"
+PROJECT_NAME="at-least-once-bench"
 
 echo "Starting shared infrastructure..."
-docker compose -f "$SCRIPT_DIR/docker-compose.shared.yml" up -d
+docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/docker-compose.shared.yml" up -d --remove-orphans
 
 echo "Waiting for shared infrastructure to be ready..."
 for i in {1..30}; do
@@ -37,7 +38,7 @@ for framework in "${FRAMEWORK_LIST[@]}"; do
     framework=$(echo "$framework" | xargs)
 
     echo "Starting $framework framework..."
-    docker compose -f "$SCRIPT_DIR/frameworks/$framework/docker-compose.yml" up -d
+    docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/frameworks/$framework/docker-compose.yml" up -d --remove-orphans
 
     case "$framework" in
         rabbitmq)
@@ -52,11 +53,11 @@ for framework in "${FRAMEWORK_LIST[@]}"; do
             ;;
         kafka)
             echo "  Kafka broker:      9092"
-            echo "  Worker metrics:    9092 (internal)"
+            echo "  Worker metrics:    9096"
             ;;
         temporal)
             echo "  Temporal server:   7233"
-            echo "  Temporal UI:       8081"
+            echo "  Temporal UI:       8083"
             echo "  Worker metrics:    9091"
             ;;
     esac
@@ -78,7 +79,7 @@ echo "  3. View dashboards:"
 echo "     Grafana:      http://localhost:3000 (admin/admin)"
 echo "     Prometheus:   http://localhost:9090"
 echo "     RabbitMQ:     http://localhost:15672 (bench/benchpass)"
-echo "     Temporal UI:  http://localhost:8081"
+echo "     Temporal UI:  http://localhost:8083"
 echo ""
 echo "  4. Stop all services:"
 echo "     ./scripts/stop-all.sh"

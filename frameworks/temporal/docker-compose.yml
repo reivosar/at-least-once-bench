@@ -1,8 +1,5 @@
 version: '3.8'
 
-networks:
-  bench-net:
-    external: true
 
 services:
   temporal-db:
@@ -18,8 +15,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-    networks:
-      - bench-net
 
   temporal:
     image: temporalio/auto-setup:1.24.0
@@ -32,18 +27,9 @@ services:
       DB_HOST: temporal-db
       DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/development.yaml
     depends_on:
-      temporal-db:
-        condition: service_healthy
+      - temporal-db
     ports:
       - "7233:7233"
-    healthcheck:
-      test: ["CMD", "tctl", "health", "status"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - bench-net
-
   temporal-ui:
     image: temporalio/ui:2.26.0
     ports:
@@ -52,8 +38,6 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
     depends_on:
       - temporal
-    networks:
-      - bench-net
 
   temporal-worker:
     build:
@@ -66,10 +50,7 @@ services:
       DOWNSTREAM_URL: "http://downstream:${DOWNSTREAM_PORT:-8080}"
       METRICS_PORT: "${TEMPORAL_WORKER_METRICS_PORT:-9091}"
     depends_on:
-      temporal:
-        condition: service_healthy
-    networks:
-      - bench-net
+      - temporal
 
 volumes:
   temporal-db-data:

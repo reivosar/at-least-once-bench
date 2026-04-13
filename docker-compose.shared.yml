@@ -1,9 +1,5 @@
 version: '3.8'
 
-networks:
-  bench-net:
-    driver: bridge
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -20,8 +16,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-    networks:
-      - bench-net
 
   downstream:
     build:
@@ -33,8 +27,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    networks:
-      - bench-net
 
   prometheus:
     image: prom/prometheus:latest
@@ -46,8 +38,6 @@ services:
       - '--storage.tsdb.path=/prometheus'
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
-    networks:
-      - bench-net
 
   grafana:
     image: grafana/grafana:latest
@@ -61,8 +51,6 @@ services:
       - "${GRAFANA_PORT:-3000}:3000"
     depends_on:
       - prometheus
-    networks:
-      - bench-net
 
 volumes:
   prometheus-data:

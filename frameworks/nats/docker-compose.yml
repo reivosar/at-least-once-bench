@@ -1,8 +1,5 @@
 version: '3.8'
 
-networks:
-  bench-net:
-    external: true
 
 services:
   nats:
@@ -16,14 +13,6 @@ services:
     ports:
       - "${NATS_PORT:-4222}:4222"
       - "${NATS_MONITORING_PORT:-8222}:8222"
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8222/varz"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - bench-net
-
   nats-worker:
     build:
       context: ../..
@@ -34,10 +23,7 @@ services:
       DOWNSTREAM_URL: "http://downstream:${DOWNSTREAM_PORT:-8080}"
       METRICS_PORT: "${NATS_WORKER_METRICS_PORT:-9095}"
     depends_on:
-      nats:
-        condition: service_healthy
-    networks:
-      - bench-net
+      - nats
 
 volumes:
   nats-data:
