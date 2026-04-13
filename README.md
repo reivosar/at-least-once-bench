@@ -1,12 +1,11 @@
 # at-least-once-bench
 
-A comprehensive benchmark comparing at-least-once delivery guarantees across five messaging frameworks using Docker:
+A comprehensive benchmark comparing at-least-once delivery guarantees across messaging frameworks using Docker:
 
-- **Temporal** — workflow history in PostgreSQL, automatic retries
-- **Kafka** (KRaft) — log + offset commit model
-- **Celery + Redis** — ACK-late task queue with Redis broker
 - **RabbitMQ** — explicit ACK/NACK with quorum queues
 - **NATS JetStream** — server-side redelivery via AckWait
+- **Kafka** (KRaft) — log + offset commit model with inner retry loop
+- **Temporal** — workflow history in PostgreSQL with automatic retries
 
 ## Overview
 
@@ -67,15 +66,23 @@ The worker will automatically start consuming jobs and posting metrics to Promet
 
 ### Run Benchmark
 
-The benchmark runner is in `bench/runner/main.go`. Currently under construction.
+Run a single benchmark:
 
 ```bash
 go run ./bench/runner/main.go \
   --framework=rabbitmq \
-  --scenario=db-down \
-  --duration=120s \
+  --scenario=http-down \
+  --duration=60s \
   --rate=50 \
-  --report=results/rabbitmq-db-down.json
+  --warmup=10s \
+  --cooldown=20s \
+  --report=results/rabbitmq-http-down.json
+```
+
+Or run all frameworks automatically:
+
+```bash
+./scripts/run-all.sh --frameworks=rabbitmq,nats,kafka,temporal --scenarios=http-down,db-down,worker-crash
 ```
 
 ### View Metrics
@@ -92,11 +99,10 @@ at-least-once-bench/
 │   ├── proto/             # Job struct
 │   └── schema/            # Database schema
 ├── frameworks/
-│   ├── temporal/
-│   ├── kafka/
-│   ├── celery/
-│   ├── rabbitmq/
-│   └── nats/
+│   ├── rabbitmq/           # Explicit ACK/NACK
+│   ├── nats/               # Server-side auto-redelivery
+│   ├── kafka/              # Offset management + inner retry
+│   └── temporal/           # Workflow history + activities
 ├── bench/
 │   ├── runner/            # Benchmark CLI
 │   └── scenarios/         # Failure injection
@@ -148,12 +154,6 @@ All workers export Prometheus metrics:
 - Idempotency key: embedded UUID in message
 - Risk: uncommitted offsets replay on consumer restart
 
-### Celery + Redis
-- **Critical**: Redis must have AOF with `appendfsync always`
-- `acks_late=True` ensures task is not acked until after execution
-- Visibility timeout can be up to 1 hour — tune based on max task duration
-- Idempotency key: Celery task ID
-
 ### RabbitMQ
 - Explicit ACK/NACK model
 - Quorum queues recommended (Raft-based, survive broker restart)
@@ -169,11 +169,10 @@ All workers export Prometheus metrics:
 ## Performance Expectations
 
 Rough throughput estimates (100% at-least-once delivery):
-- RabbitMQ: 1000+ msg/sec
-- NATS: 5000+ msg/sec
-- Kafka: 10000+ msg/sec
-- Celery + Redis: 500+ msg/sec (Python overhead)
-- Temporal: 100-300 msg/sec (workflow history disk I/O)
+- RabbitMQ: 500-1000 msg/sec (TCP connection overhead)
+- NATS: 5000+ msg/sec (lightweight, in-memory)
+- Kafka: 10000+ msg/sec (optimized for high throughput)
+- Temporal: 50-300 msg/sec (workflow history disk I/O, slowest)
 
 (These vary based on payload size, worker concurrency, and hardware)
 
