@@ -4,7 +4,7 @@
 # Usage: ./scripts/run-all.sh [options]
 #   --duration=<seconds>   Test duration (default: 60)
 #   --rate=<msg/s>        Message submission rate (default: 100)
-#   --frameworks=<csv>    Comma-separated framework list (default: rabbitmq,nats,kafka,temporal,celery)
+#   --frameworks=<csv>    Comma-separated framework list (default: rabbitmq,nats,kafka,temporal)
 #   --scenarios=<csv>     Comma-separated scenario list (default: http-down,db-down,worker-crash)
 #   --dry-run             Print commands without executing
 
@@ -16,8 +16,8 @@ RUNNER="${SCRIPT_DIR}/bench/runner"
 # Defaults
 DURATION=60
 RATE=100
-FRAMEWORKS="rabbitmq"  # Start with just rabbitmq for now since others aren't implemented yet
-SCENARIOS="http-down"
+FRAMEWORKS="rabbitmq,nats,kafka,temporal"
+SCENARIOS="http-down,db-down,worker-crash"
 DRY_RUN=false
 
 # Parse flags
