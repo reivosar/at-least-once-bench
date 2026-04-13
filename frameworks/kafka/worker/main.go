@@ -20,6 +20,7 @@ import (
 	"github.com/segmentio/kafka-go"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	_ "github.com/lib/pq"
 
 	"github.com/reivosar/at-least-once-bench/shared/proto"
 )

@@ -14,6 +14,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	_ "github.com/lib/pq"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 

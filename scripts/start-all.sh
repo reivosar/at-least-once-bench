@@ -11,7 +11,7 @@ FRAMEWORKS="${FRAMEWORKS:-rabbitmq,nats,kafka,temporal}"
 PROJECT_NAME="at-least-once-bench"
 
 echo "Starting shared infrastructure..."
-docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/docker-compose.shared.yml" up -d --remove-orphans
+docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/docker-compose.shared.yml" up -d
 
 echo "Waiting for shared infrastructure to be ready..."
 for i in {1..30}; do
@@ -38,7 +38,7 @@ for framework in "${FRAMEWORK_LIST[@]}"; do
     framework=$(echo "$framework" | xargs)
 
     echo "Starting $framework framework..."
-    docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/frameworks/$framework/docker-compose.yml" up -d --remove-orphans
+    docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/frameworks/$framework/docker-compose.yml" up -d
 
     case "$framework" in
         rabbitmq)
