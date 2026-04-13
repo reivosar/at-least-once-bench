@@ -4,6 +4,7 @@ go 1.22
 
 require (
 	github.com/google/uuid v1.5.0
+	github.com/lib/pq v1.10.9
 	github.com/nats-io/nats.go v1.31.0
 	github.com/prometheus/client_golang v1.18.0
 	github.com/rabbitmq/amqp091-go v1.10.0
