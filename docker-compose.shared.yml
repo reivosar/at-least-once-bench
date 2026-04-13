@@ -8,13 +8,13 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: bench
-      POSTGRES_PASSWORD: benchpass
-      POSTGRES_DB: benchdb
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - ./shared/schema/init.sql:/docker-entrypoint-initdb.d/01-schema.sql
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U bench"]
       interval: 5s
@@ -28,8 +28,8 @@ services:
       context: .
       dockerfile: shared/downstream/Dockerfile
     ports:
-      - "8080:8080"
-      - "8081:8081"
+      - "${DOWNSTREAM_PORT}:8080"
+      - "${DOWNSTREAM_METRICS_PORT}:8081"
     depends_on:
       postgres:
         condition: service_healthy
@@ -45,20 +45,20 @@ services:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
     ports:
-      - "9090:9090"
+      - "${PROMETHEUS_PORT}:9090"
     networks:
       - bench-net
 
   grafana:
     image: grafana/grafana:latest
     environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
     volumes:
       - grafana-data:/var/lib/grafana
       - ./infra/grafana/provisioning:/etc/grafana/provisioning
     ports:
-      - "3000:3000"
+      - "${GRAFANA_PORT}:3000"
     depends_on:
       - prometheus
     networks:

@@ -38,9 +38,9 @@ services:
       KAFKA_BROKERS: "kafka:29092"
       KAFKA_TOPIC: "bench-jobs"
       KAFKA_GROUP_ID: "bench-group"
-      DATABASE_URL: "postgres://bench:benchpass@postgres:5432/benchdb?sslmode=disable"
-      DOWNSTREAM_URL: "http://downstream:8080"
-      METRICS_PORT: "9092"
+      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      DOWNSTREAM_URL: "http://downstream:${DOWNSTREAM_PORT}"
+      METRICS_PORT: "${KAFKA_WORKER_METRICS_PORT}"
     depends_on:
       kafka:
         condition: service_healthy

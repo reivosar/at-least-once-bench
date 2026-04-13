@@ -14,8 +14,8 @@ services:
     volumes:
       - nats-data:/data
     ports:
-      - "4222:4222"
-      - "8222:8222"
+      - "${NATS_PORT}:4222"
+      - "${NATS_MONITORING_PORT}:8222"
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8222/varz"]
       interval: 5s
@@ -30,9 +30,9 @@ services:
       dockerfile: frameworks/nats/worker/Dockerfile
     environment:
       NATS_URL: "nats://nats:4222"
-      DATABASE_URL: "postgres://bench:benchpass@postgres:5432/benchdb?sslmode=disable"
-      DOWNSTREAM_URL: "http://downstream:8080"
-      METRICS_PORT: "9095"
+      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      DOWNSTREAM_URL: "http://downstream:${DOWNSTREAM_PORT}"
+      METRICS_PORT: "${NATS_WORKER_METRICS_PORT}"
     depends_on:
       nats:
         condition: service_healthy
