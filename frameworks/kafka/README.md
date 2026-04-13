@@ -72,8 +72,8 @@ Tunables in `worker/main.go`:
 
 | Feature | Kafka | RabbitMQ | NATS |
 |---------|-------|----------|------|
-| Server-side retry | ❌ | ✅ | ✅ |
-| Consumer restart on failure | ✅ Required | ✅ Auto | ✅ Auto |
+| Server-side retry | No | Yes | Yes |
+| Consumer restart on failure | Required | Auto | Auto |
 | Offset/Ack model | Offset commit | Explicit ACK | Explicit ACK |
 | Redelivery trigger | Consumer restart | TCP close or timeout | Server timeout |
 | Application retry logic | Must implement | Optional | Optional |
