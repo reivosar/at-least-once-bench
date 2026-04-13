@@ -1,0 +1,33 @@
+results/
+*.json
+*.md
+!README.md
+!frameworks/*/README.md
+
+# Go
+*.o
+*.a
+*.so
+__debug_bin
+*.exe
+*.dll
+*.dylib
+*.test
+*.out
+vendor/
+bin/
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker
+docker-compose.override.yml
+
+# Environment
+.env
+.env.local

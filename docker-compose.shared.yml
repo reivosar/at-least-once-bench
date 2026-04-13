@@ -1,0 +1,69 @@
+version: '3.8'
+
+networks:
+  bench-net:
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bench
+      POSTGRES_PASSWORD: benchpass
+      POSTGRES_DB: benchdb
+    volumes:
+      - ./shared/schema/init.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bench"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bench-net
+
+  downstream:
+    build:
+      context: .
+      dockerfile: shared/downstream/Dockerfile
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - bench-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - "9090:9090"
+    networks:
+      - bench-net
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - bench-net
+
+volumes:
+  prometheus-data:
+  grafana-data:

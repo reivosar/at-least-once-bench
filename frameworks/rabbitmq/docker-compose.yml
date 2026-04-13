@@ -1,0 +1,40 @@
+version: '3.8'
+
+networks:
+  bench-net:
+    external: true
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: bench
+      RABBITMQ_DEFAULT_PASS: benchpass
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bench-net
+
+  rabbitmq-worker:
+    build:
+      context: ../..
+      dockerfile: frameworks/rabbitmq/worker/Dockerfile
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: bench
+      RABBITMQ_PASSWORD: benchpass
+      DATABASE_URL: "postgres://bench:benchpass@postgres:5432/benchdb?sslmode=disable"
+      DOWNSTREAM_URL: "http://downstream:8080"
+      METRICS_PORT: "9094"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - bench-net

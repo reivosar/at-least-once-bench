@@ -1,0 +1,30 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'at-least-once-bench'
+
+scrape_configs:
+  - job_name: 'downstream'
+    static_configs:
+      - targets: ['downstream:8081']
+
+  - job_name: 'temporal-worker'
+    static_configs:
+      - targets: ['temporal-worker:9091']
+
+  - job_name: 'kafka-worker'
+    static_configs:
+      - targets: ['kafka-worker:9092']
+
+  - job_name: 'celery-worker'
+    static_configs:
+      - targets: ['celery-worker:9093']
+
+  - job_name: 'rabbitmq-worker'
+    static_configs:
+      - targets: ['rabbitmq-worker:9094']
+
+  - job_name: 'nats-worker'
+    static_configs:
+      - targets: ['nats-worker:9095']
