@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/reivosar/at-least-once-bench/bench/scenarios"
 )
 
 type Config struct {
@@ -85,11 +86,18 @@ func main() {
 	// Wait a bit for initial processing
 	time.Sleep(2 * time.Second)
 
-	// Inject failure based on scenario
-	log.Printf("Injecting failure: %s", cfg.Scenario)
-	if !injectFailure(cfg) {
-		log.Printf("Warning: failed to inject failure scenario %s", cfg.Scenario)
+	// Create and inject scenario
+	scenario := getScenario(cfg)
+	if scenario == nil {
+		log.Fatalf("Unknown scenario: %s", cfg.Scenario)
 	}
+
+	log.Printf("Injecting failure: %s", scenario.Name())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := scenario.Inject(ctx); err != nil {
+		log.Printf("Warning: failed to inject failure: %v", err)
+	}
+	cancel()
 
 	// Main test phase: continue submitting jobs during failure
 	log.Printf("Test phase: %v", cfg.Duration)
@@ -97,9 +105,11 @@ func main() {
 
 	// Recover from failure
 	log.Printf("Recovering from failure")
-	if !recoverFailure(cfg) {
-		log.Printf("Warning: failed to recover from failure")
+	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+	if err := scenario.Recover(ctx); err != nil {
+		log.Printf("Warning: failed to recover from failure: %v", err)
 	}
+	cancel()
 
 	// Cooldown phase: wait for in-flight retries to settle
 	log.Printf("Cooldown phase: %v", cfg.Cooldown)
@@ -236,26 +246,17 @@ func submitJob(url string, job SinkRequest) error {
 	return nil
 }
 
-func injectFailure(cfg Config) bool {
-	url := fmt.Sprintf("http://localhost:8080/admin/fail")
-	resp, err := http.Post(url, "application/json", nil)
-	if err != nil {
-		log.Printf("Error injecting failure: %v", err)
-		return false
+func getScenario(cfg Config) scenarios.Scenario {
+	switch cfg.Scenario {
+	case "http-down":
+		return scenarios.NewHTTPDownScenario()
+	case "db-down":
+		return scenarios.NewDBDownScenario()
+	case "worker-crash":
+		return scenarios.NewWorkerCrashScenario(cfg.Framework)
+	default:
+		return nil
 	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
-}
-
-func recoverFailure(cfg Config) bool {
-	url := fmt.Sprintf("http://localhost:8080/admin/recover")
-	resp, err := http.Post(url, "application/json", nil)
-	if err != nil {
-		log.Printf("Error recovering: %v", err)
-		return false
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
 }
 
 func writeReport(result *Result, path string) error {
