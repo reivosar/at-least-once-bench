@@ -2,6 +2,24 @@ version: '3.8'
 
 
 services:
+  temporal-nginx-downstream:
+    image: nginx:alpine
+    container_name: bench-temporal-nginx-downstream
+    volumes:
+      - ../../infra/nginx/nginx-http-downstream.conf:/etc/nginx/conf.d/default.conf
+
+  temporal-nginx-postgres:
+    image: nginx:alpine
+    container_name: bench-temporal-nginx-postgres
+    volumes:
+      - ../../infra/nginx/nginx-tcp-postgres.conf:/etc/nginx/nginx.conf
+
+  temporal-nginx-broker:
+    image: nginx:alpine
+    container_name: bench-temporal-nginx-broker
+    volumes:
+      - ../../infra/nginx/nginx-tcp-temporal.conf:/etc/nginx/nginx.conf
+
   temporal-db:
     image: postgres:16-alpine
     environment:
@@ -30,6 +48,7 @@ services:
       - temporal-db
     ports:
       - "7233:7233"
+
   temporal-ui:
     image: temporalio/ui:2.26.0
     ports:
@@ -43,14 +62,18 @@ services:
     build:
       context: ../..
       dockerfile: frameworks/temporal/worker/Dockerfile
+    container_name: bench-temporal-worker
     environment:
-      TEMPORAL_HOST: temporal
+      TEMPORAL_HOST: temporal-nginx-broker
       TEMPORAL_PORT: 7233
-      DATABASE_URL: "postgres://${POSTGRES_USER:-bench}:${POSTGRES_PASSWORD:-benchpass}@postgres:5432/${POSTGRES_DB:-benchdb}?sslmode=disable"
-      DOWNSTREAM_URL: "http://downstream:${DOWNSTREAM_PORT:-8080}"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-bench}:${POSTGRES_PASSWORD:-benchpass}@temporal-nginx-postgres:5432/${POSTGRES_DB:-benchdb}?sslmode=disable"
+      DOWNSTREAM_URL: "http://temporal-nginx-downstream:${DOWNSTREAM_PORT:-8080}"
       METRICS_PORT: "${TEMPORAL_WORKER_METRICS_PORT:-9091}"
     depends_on:
       - temporal
+      - temporal-nginx-downstream
+      - temporal-nginx-postgres
+      - temporal-nginx-broker
 
 volumes:
   temporal-db-data:

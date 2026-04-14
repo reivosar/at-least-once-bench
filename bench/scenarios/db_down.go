@@ -6,25 +6,29 @@ import (
 )
 
 // DBDownScenario simulates the database being unreachable.
-// It disconnects the "postgres" container from the bench-net network.
+// It stops the nginx proxy for postgres specific to the framework.
 // This tests the critical scenario where HTTP succeeds but DB write fails,
 // causing over-delivery (duplicate HTTP calls) on retry.
 type DBDownScenario struct {
 	BaseScenario
+	framework string
 }
 
-func NewDBDownScenario() *DBDownScenario {
+func NewDBDownScenario(framework string) *DBDownScenario {
 	return &DBDownScenario{
 		BaseScenario: BaseScenario{name: "db-down"},
+		framework:    framework,
 	}
 }
 
 func (s *DBDownScenario) Inject(ctx context.Context) error {
-	log.Println("Injecting db-down scenario: disconnecting postgres from network")
-	return DockerNetworkDisconnect("postgres")
+	nginxContainer := GetNginxContainerName(s.framework, "postgres")
+	log.Printf("Injecting db-down scenario: stopping %s", nginxContainer)
+	return DockerStop(nginxContainer)
 }
 
 func (s *DBDownScenario) Recover(ctx context.Context) error {
-	log.Println("Recovering db-down scenario: reconnecting postgres to network")
-	return DockerNetworkConnect("postgres")
+	nginxContainer := GetNginxContainerName(s.framework, "postgres")
+	log.Printf("Recovering db-down scenario: starting %s", nginxContainer)
+	return DockerStart(nginxContainer)
 }

@@ -2,6 +2,24 @@ version: '3.8'
 
 
 services:
+  nats-nginx-downstream:
+    image: nginx:alpine
+    container_name: bench-nats-nginx-downstream
+    volumes:
+      - ../../infra/nginx/nginx-http-downstream.conf:/etc/nginx/conf.d/default.conf
+
+  nats-nginx-postgres:
+    image: nginx:alpine
+    container_name: bench-nats-nginx-postgres
+    volumes:
+      - ../../infra/nginx/nginx-tcp-postgres.conf:/etc/nginx/nginx.conf
+
+  nats-nginx-broker:
+    image: nginx:alpine
+    container_name: bench-nats-nginx-broker
+    volumes:
+      - ../../infra/nginx/nginx-tcp-nats.conf:/etc/nginx/nginx.conf
+
   nats:
     image: nats:2.10-alpine
     command:
@@ -13,17 +31,22 @@ services:
     ports:
       - "${NATS_PORT:-4222}:4222"
       - "${NATS_MONITORING_PORT:-8222}:8222"
+
   nats-worker:
     build:
       context: ../..
       dockerfile: frameworks/nats/worker/Dockerfile
+    container_name: bench-nats-worker
     environment:
-      NATS_URL: "nats://nats:4222"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-bench}:${POSTGRES_PASSWORD:-benchpass}@postgres:5432/${POSTGRES_DB:-benchdb}?sslmode=disable"
-      DOWNSTREAM_URL: "http://downstream:${DOWNSTREAM_PORT:-8080}"
+      NATS_URL: "nats://nats-nginx-broker:4222"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-bench}:${POSTGRES_PASSWORD:-benchpass}@nats-nginx-postgres:5432/${POSTGRES_DB:-benchdb}?sslmode=disable"
+      DOWNSTREAM_URL: "http://nats-nginx-downstream:${DOWNSTREAM_PORT:-8080}"
       METRICS_PORT: "${NATS_WORKER_METRICS_PORT:-9095}"
     depends_on:
       - nats
+      - nats-nginx-downstream
+      - nats-nginx-postgres
+      - nats-nginx-broker
 
 volumes:
   nats-data:

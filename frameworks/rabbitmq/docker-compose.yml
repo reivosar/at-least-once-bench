@@ -2,6 +2,24 @@ version: '3.8'
 
 
 services:
+  rabbitmq-nginx-downstream:
+    image: nginx:alpine
+    container_name: bench-rabbitmq-nginx-downstream
+    volumes:
+      - ../../infra/nginx/nginx-http-downstream.conf:/etc/nginx/conf.d/default.conf
+
+  rabbitmq-nginx-postgres:
+    image: nginx:alpine
+    container_name: bench-rabbitmq-nginx-postgres
+    volumes:
+      - ../../infra/nginx/nginx-tcp-postgres.conf:/etc/nginx/nginx.conf
+
+  rabbitmq-nginx-broker:
+    image: nginx:alpine
+    container_name: bench-rabbitmq-nginx-broker
+    volumes:
+      - ../../infra/nginx/nginx-tcp-rabbitmq.conf:/etc/nginx/nginx.conf
+
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     environment:
@@ -10,17 +28,22 @@ services:
     ports:
       - "${RABBITMQ_PORT:-5672}:5672"
       - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+
   rabbitmq-worker:
     build:
       context: ../..
       dockerfile: frameworks/rabbitmq/worker/Dockerfile
+    container_name: bench-rabbitmq-worker
     environment:
-      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_HOST: rabbitmq-nginx-broker
       RABBITMQ_PORT: 5672
       RABBITMQ_USER: ${RABBITMQ_USER:-bench}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-benchpass}
-      DATABASE_URL: "postgres://${POSTGRES_USER:-bench}:${POSTGRES_PASSWORD:-benchpass}@postgres:5432/${POSTGRES_DB:-benchdb}?sslmode=disable"
-      DOWNSTREAM_URL: "http://downstream:${DOWNSTREAM_PORT:-8080}"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-bench}:${POSTGRES_PASSWORD:-benchpass}@rabbitmq-nginx-postgres:5432/${POSTGRES_DB:-benchdb}?sslmode=disable"
+      DOWNSTREAM_URL: "http://rabbitmq-nginx-downstream:${DOWNSTREAM_PORT:-8080}"
       METRICS_PORT: "${RABBITMQ_WORKER_METRICS_PORT:-9094}"
     depends_on:
       - rabbitmq
+      - rabbitmq-nginx-downstream
+      - rabbitmq-nginx-postgres
+      - rabbitmq-nginx-broker

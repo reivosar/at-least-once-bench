@@ -29,24 +29,24 @@ func (s *BaseScenario) Name() string {
 	return s.name
 }
 
-// DockerNetworkDisconnect disconnects a container from the bench-net network.
-func DockerNetworkDisconnect(containerName string) error {
-	cmd := exec.Command("docker", "network", "disconnect", "bench-net", containerName)
+// DockerStop stops a container.
+func DockerStop(containerName string) error {
+	cmd := exec.Command("docker", "stop", containerName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Printf("docker network disconnect %s: %s", containerName, string(output))
-		return fmt.Errorf("failed to disconnect %s: %w", containerName, err)
+		log.Printf("docker stop %s: %s", containerName, string(output))
+		return fmt.Errorf("failed to stop %s: %w", containerName, err)
 	}
 	return nil
 }
 
-// DockerNetworkConnect reconnects a container to the bench-net network.
-func DockerNetworkConnect(containerName string) error {
-	cmd := exec.Command("docker", "network", "connect", "bench-net", containerName)
+// DockerStart starts a stopped container.
+func DockerStart(containerName string) error {
+	cmd := exec.Command("docker", "start", containerName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Printf("docker network connect %s: %s", containerName, string(output))
-		return fmt.Errorf("failed to connect %s: %w", containerName, err)
+		log.Printf("docker start %s: %s", containerName, string(output))
+		return fmt.Errorf("failed to start %s: %w", containerName, err)
 	}
 	return nil
 }
@@ -87,5 +87,10 @@ func DockerRestartContainer(containerName string) error {
 
 // GetWorkerContainerName returns the worker container name for a framework.
 func GetWorkerContainerName(framework string) string {
-	return fmt.Sprintf("%s-worker", framework)
+	return fmt.Sprintf("bench-%s-worker", framework)
+}
+
+// GetNginxContainerName returns the nginx container name for a framework and service.
+func GetNginxContainerName(framework, service string) string {
+	return fmt.Sprintf("bench-%s-nginx-%s", framework, service)
 }

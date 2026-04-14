@@ -2,6 +2,18 @@ version: '3.8'
 
 
 services:
+  kafka-nginx-downstream:
+    image: nginx:alpine
+    container_name: bench-kafka-nginx-downstream
+    volumes:
+      - ../../infra/nginx/nginx-http-downstream.conf:/etc/nginx/conf.d/default.conf
+
+  kafka-nginx-postgres:
+    image: nginx:alpine
+    container_name: bench-kafka-nginx-postgres
+    volumes:
+      - ../../infra/nginx/nginx-tcp-postgres.conf:/etc/nginx/nginx.conf
+
   kafka:
     image: confluentinc/cp-kafka:7.7.0
     environment:
@@ -19,16 +31,20 @@ services:
       CLUSTER_ID: MkwNYQ4TT3yt7e4ct6e1Rw
     ports:
       - "${KAFKA_PORT:-9092}:9092"
+
   kafka-worker:
     build:
       context: ../..
       dockerfile: frameworks/kafka/worker/Dockerfile
+    container_name: bench-kafka-worker
     environment:
       KAFKA_BROKERS: "kafka:29092"
       KAFKA_TOPIC: "bench-jobs"
       KAFKA_GROUP_ID: "bench-group"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-bench}:${POSTGRES_PASSWORD:-benchpass}@postgres:5432/${POSTGRES_DB:-benchdb}?sslmode=disable"
-      DOWNSTREAM_URL: "http://downstream:${DOWNSTREAM_PORT:-8080}"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-bench}:${POSTGRES_PASSWORD:-benchpass}@kafka-nginx-postgres:5432/${POSTGRES_DB:-benchdb}?sslmode=disable"
+      DOWNSTREAM_URL: "http://kafka-nginx-downstream:${DOWNSTREAM_PORT:-8080}"
       METRICS_PORT: "${KAFKA_WORKER_METRICS_PORT:-9096}"
     depends_on:
       - kafka
+      - kafka-nginx-downstream
+      - kafka-nginx-postgres

@@ -249,9 +249,9 @@ func submitJob(url string, job SinkRequest) error {
 func getScenario(cfg Config) scenarios.Scenario {
 	switch cfg.Scenario {
 	case "http-down":
-		return scenarios.NewHTTPDownScenario()
+		return scenarios.NewHTTPDownScenario(cfg.Framework)
 	case "db-down":
-		return scenarios.NewDBDownScenario()
+		return scenarios.NewDBDownScenario(cfg.Framework)
 	case "worker-crash":
 		return scenarios.NewWorkerCrashScenario(cfg.Framework)
 	default:

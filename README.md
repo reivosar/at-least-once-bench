@@ -24,10 +24,16 @@ Load Generator (Go runner)
 [Framework Queue/Workflow]
     ↓
 Worker (Go/Python)
-    ├─→ HTTP POST to downstream:8080/sink
-    └─→ INSERT into processed_jobs (PostgreSQL)
+    ├─→ HTTP POST via NGINX → downstream:8080/sink
+    ├─→ DB writes via NGINX → PostgreSQL:5432
+    └─→ Broker access via NGINX → [RabbitMQ/NATS/Kafka/Temporal]
     
 Monitoring: Prometheus + Grafana
+
+NGINX Layer:
+  • nginx-http-downstream: Simulate HTTP failures (docker stop)
+  • nginx-tcp-postgres: Simulate DB failures (docker stop)
+  • nginx-tcp-broker: Simulate broker failures (docker stop)
 ```
 
 ## Quick Start
@@ -105,10 +111,11 @@ at-least-once-bench/
 │   └── temporal/           # Workflow history + activities
 ├── bench/
 │   ├── runner/            # Benchmark CLI
-│   └── scenarios/         # Failure injection
+│   └── scenarios/         # Failure injection (docker stop/start)
 ├── infra/
-│   ├── prometheus/
-│   └── grafana/
+│   ├── nginx/              # NGINX proxy configs (HTTP, TCP)
+│   ├── prometheus/         # Metrics collection
+│   └── grafana/            # Visualization
 └── docker-compose.shared.yml
 ```
 
@@ -125,12 +132,15 @@ ON CONFLICT (job_id) DO NOTHING;
 If 0 rows are inserted, the message was already processed — it is acked without calling the downstream again.
 
 ### Failure Injection
-Network failures are injected via Docker API:
+Network failures are injected via Docker stop/start commands targeting NGINX proxies:
 ```bash
-docker network disconnect bench-net downstream  # HTTP server unreachable
-docker network disconnect bench-net postgres    # Database unreachable
-docker kill --signal=SIGKILL <worker>           # Worker crash
+docker stop bench-{framework}-nginx-downstream  # HTTP server unreachable
+docker stop bench-{framework}-nginx-postgres    # Database unreachable
+docker stop bench-{framework}-worker             # Worker crash
+docker start bench-{framework}-nginx-downstream  # Restore HTTP connectivity
 ```
+
+NGINX proxies act as transparent TCP/HTTP load balancers, allowing controlled network failures without modifying worker configuration.
 
 ### Metrics
 All workers export Prometheus metrics:
