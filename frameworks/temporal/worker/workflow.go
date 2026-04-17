@@ -32,6 +32,15 @@ func ProcessJobWorkflow(ctx workflow.Context, job proto.Job) error {
 	var result ProcessJobResult
 	err := workflow.ExecuteActivity(ctx, ProcessJobActivity, job).Get(ctx, &result)
 	if err != nil {
+		// All retries exhausted — record as lost job via a separate activity
+		recordCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			ScheduleToCloseTimeout: 10 * time.Second,
+			StartToCloseTimeout:    5 * time.Second,
+			RetryPolicy: &temporal.RetryPolicy{
+				MaximumAttempts: 3,
+			},
+		})
+		_ = workflow.ExecuteActivity(recordCtx, RecordLostJobActivity, job.ID).Get(recordCtx, nil)
 		return err
 	}
 

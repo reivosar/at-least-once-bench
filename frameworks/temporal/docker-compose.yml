@@ -19,6 +19,16 @@ services:
     container_name: bench-temporal-nginx-broker
     volumes:
       - ../../infra/nginx/nginx-tcp-temporal.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - temporal
+
+  temporal-nginx-temporal-db:
+    image: nginx:alpine
+    container_name: bench-temporal-nginx-temporal-db
+    volumes:
+      - ../../infra/nginx/nginx-tcp-temporal-db.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - temporal-db
 
   temporal-db:
     image: postgres:16-alpine
@@ -37,15 +47,18 @@ services:
   temporal:
     image: temporalio/auto-setup:1.24.0
     environment:
-      DB: postgresql
+      DB: postgres12
       DB_PORT: 5432
       POSTGRES_USER: temporal
-      POSTGRES_PASSWORD: temporal
-      POSTGRES_DB: temporal
-      DB_HOST: temporal-db
-      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/development.yaml
+      POSTGRES_PWD: temporal
+      DBNAME: temporal
+      POSTGRES_SEEDS: temporal-nginx-temporal-db
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/docker.yaml
     depends_on:
-      - temporal-db
+      temporal-db:
+        condition: service_healthy
+      temporal-nginx-temporal-db:
+        condition: service_started
     ports:
       - "7233:7233"
 
@@ -63,6 +76,9 @@ services:
       context: ../..
       dockerfile: frameworks/temporal/worker/Dockerfile
     container_name: bench-temporal-worker
+    restart: on-failure
+    ports:
+      - "7234:7234"
     environment:
       TEMPORAL_HOST: temporal-nginx-broker
       TEMPORAL_PORT: 7233

@@ -288,6 +288,17 @@ func processMessages(ch *amqp.Channel, msgs <-chan amqp.Delivery, db *sql.DB, wo
 			continue
 		}
 
+		// Detect redelivery via quorum queue x-delivery-count header
+		deliveryCount := 1
+		if dc, ok := delivery.Headers["x-delivery-count"]; ok {
+			if dcInt, ok := dc.(int64); ok {
+				deliveryCount = int(dcInt) + 1
+			}
+		}
+		if deliveryCount > 1 {
+			benchRetryTotal.WithLabelValues().Inc()
+		}
+
 		// Process the job: call downstream and write to DB
 		processed := false
 		if callDownstream(job) {
@@ -304,19 +315,11 @@ func processMessages(ch *amqp.Channel, msgs <-chan amqp.Delivery, db *sql.DB, wo
 			latency := float64(time.Now().UnixMilli()-job.SubmittedAt.UnixMilli()) / 1000.0
 			benchLatencySeconds.WithLabelValues().Observe(latency)
 		} else {
-			// Determine if this is a retry
-			if job.Attempt > 1 {
-				benchRetryTotal.WithLabelValues().Inc()
-			}
-
-			// Check if we've exceeded max retries
-			if job.Attempt >= maxRetries {
+			if deliveryCount >= maxRetries {
 				log.Printf("Worker %d: Job %s exceeded max retries (%d), sending to DLX", workerID, job.ID, maxRetries)
 				delivery.Nack(false, false) // Send to DLX
 				benchLostTotal.WithLabelValues().Inc()
 			} else {
-				// Increment attempt and requeue
-				job.Attempt++
 				delivery.Nack(false, true) // Requeue for retry
 			}
 		}

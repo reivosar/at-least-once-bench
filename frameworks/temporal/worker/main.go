@@ -198,6 +198,7 @@ func main() {
 	// Register workflow and activities
 	w.RegisterWorkflow(ProcessJobWorkflow)
 	w.RegisterActivity(ProcessJobActivity)
+	w.RegisterActivity(RecordLostJobActivity)
 
 	// Run worker
 	go func() {

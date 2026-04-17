@@ -4,6 +4,8 @@
 # Usage: ./scripts/run-all.sh [options]
 #   --duration=<seconds>   Test duration (default: 60)
 #   --rate=<msg/s>        Message submission rate (default: 100)
+#   --warmup=<seconds>    Warmup duration (default: 10)
+#   --cooldown=<seconds>  Cooldown duration (default: 30)
 #   --frameworks=<csv>    Comma-separated framework list (default: rabbitmq,nats,kafka,temporal)
 #   --scenarios=<csv>     Comma-separated scenario list (default: http-down,db-down,worker-crash)
 #   --dry-run             Print commands without executing
@@ -16,6 +18,8 @@ RUNNER="${SCRIPT_DIR}/bench/runner"
 # Defaults
 DURATION=60
 RATE=100
+WARMUP=10
+COOLDOWN=30
 FRAMEWORKS="rabbitmq,nats,kafka,temporal"
 SCENARIOS="http-down,db-down,worker-crash"
 DRY_RUN=false
@@ -35,6 +39,12 @@ for arg in "$@"; do
         --scenarios=*)
             SCENARIOS="${arg#*=}"
             ;;
+        --warmup=*)
+            WARMUP="${arg#*=}"
+            ;;
+        --cooldown=*)
+            COOLDOWN="${arg#*=}"
+            ;;
         --dry-run)
             DRY_RUN=true
             ;;
@@ -46,7 +56,7 @@ for arg in "$@"; do
 done
 
 echo "at-least-once-bench: Running all framework × scenario combinations"
-echo "Duration: ${DURATION}s, Rate: ${RATE} msg/s"
+echo "Duration: ${DURATION}s, Rate: ${RATE} msg/s, Warmup: ${WARMUP}s, Cooldown: ${COOLDOWN}s"
 
 # Check shared infrastructure is running
 echo "Checking shared infrastructure..."
@@ -94,6 +104,8 @@ for framework in "${FRAMEWORK_LIST[@]}"; do
             --scenario=$scenario \
             --duration=${DURATION}s \
             --rate=$RATE \
+            --warmup=${WARMUP}s \
+            --cooldown=${COOLDOWN}s \
             --report=$REPORT_FILE"
 
         TOTAL_TESTS=$((TOTAL_TESTS + 1))

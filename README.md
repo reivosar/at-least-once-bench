@@ -152,39 +152,125 @@ All workers export Prometheus metrics:
 
 ## Framework-Specific Notes
 
-### Temporal
-- Requires separate PostgreSQL instance for workflow history
-- Automatic retries via Activity timeout
-- Idempotency key: `workflowId + activityId`
-- Risk: if Temporal's DB goes down, workflows pause
-
 ### Kafka
-- Consumer must manually commit offsets after processing
-- No automatic retry — requires inner retry loop in worker
-- Idempotency key: embedded UUID in message
-- Risk: uncommitted offsets replay on consumer restart
+- Uses `FetchMessage` (not `ReadMessage`) to prevent auto-committing offsets before processing completes
+- Inner retry loop with exponential backoff (5 attempts) — retries stay in-process, no broker round-trip
+- When DB is unreachable, the idempotency check fails and the message is not committed — it will be retried on the next poll
+- Consumer group rebalancing after worker-crash adds 10-20s of recovery latency
+- Lowest message loss across all scenarios (9 out of ~2,000 in http-down)
+
+### Temporal
+- Requires a separate PostgreSQL instance (`temporal-db`) for workflow history, proxied through NGINX for fault injection
+- Activity retries managed by the workflow engine: `MaximumAttempts=5`, `InitialInterval=1s`, `BackoffCoefficient=2.0`
+- Failed workflows (all retries exhausted) are recorded via a dedicated `RecordLostJobActivity`
+- Near 1:1 ratio of HTTP calls to processed messages — minimal over-delivery
+- Lowest throughput (2-10 msg/s) due to workflow engine overhead
+- If Temporal's own DB goes down (tested in db-down scenario), workflows pause and resume automatically on recovery
 
 ### RabbitMQ
-- Explicit ACK/NACK model
-- Quorum queues recommended (Raft-based, survive broker restart)
-- Dead-letter exchange needed for poison messages
-- Idempotency key: embedded UUID in message
+- Quorum queues with `x-delivery-count` header for accurate retry tracking
+- Messages exceeding `maxRetries=5` deliveries are routed to a dead-letter exchange (DLX) and counted as lost
+- Broker-side redelivery is fast — during a 30s outage, messages cycle through all 5 retries quickly, causing 59% message loss in http-down
+- To reduce loss: increase `maxRetries` or add a redelivery delay via quorum queue configuration
+- Best db-down recovery: `processed == submitted` (all messages eventually processed)
 
 ### NATS JetStream
-- Server-side redelivery (no consumer restart needed)
-- File-backed stream persistence
-- `AckWait` controls redelivery timeout (default 30s, tune as needed)
-- Idempotency key: `Nats-Msg-Id` header (with dedup window)
+- Server-side redelivery with `ackWait=60s` and `maxDeliver=20`
+- Uses `msg.Metadata().NumDelivered` for retry tracking (not the job's internal attempt counter)
+- `msg.Term()` used to stop redelivery when max deliveries are reached
+- On worker restart, all unacknowledged messages are redelivered — can cause massive reprocessing (31k messages for 2k submitted)
+- Still loses 370 messages (19%) in http-down despite tuning — JetStream's delivery semantics are difficult to configure for strict at-least-once guarantees
 
-## Performance Expectations
+## Benchmark Results
 
-Rough throughput estimates (100% at-least-once delivery):
-- RabbitMQ: 500-1000 msg/sec (TCP connection overhead)
-- NATS: 5000+ msg/sec (lightweight, in-memory)
-- Kafka: 10000+ msg/sec (optimized for high throughput)
-- Temporal: 50-300 msg/sec (workflow history disk I/O, slowest)
+### Test Conditions
 
-(These vary based on payload size, worker concurrency, and hardware)
+| Parameter | Value |
+|-----------|-------|
+| Rate | 50 msg/s |
+| Duration | 30s (failure injection phase) |
+| Warmup | 10s |
+| Cooldown | 30s |
+| Submitted per test | ~2,000 messages |
+
+### Results
+
+| Framework | Scenario | Submitted | Processed | Retried | Lost | Dup HTTP | Throughput (msg/s) |
+|-----------|----------|-----------|-----------|---------|------|----------|-------------------|
+| **RabbitMQ** | http-down | 1,979 | 808 | 5,278 | 1,171 | 808 | 10.9 |
+| **RabbitMQ** | db-down | 1,987 | 1,987 | 1,173 | 0 | 1,987 | 23.8 |
+| **RabbitMQ** | worker-crash | 1,996 | 1,497 | 0 | 0 | 1,497 | 20.4 |
+| **NATS** | http-down | 1,962 | 1,093 | 7,464 | 370 | 1,093 | 15.0 |
+| **NATS** | db-down | 1,982 | 819 | 31 | 0 | 819 | 9.8 |
+| **NATS** | worker-crash | 1,987 | 31,296 | 0 | 0 | 2,732 | 422.8 |
+| **Kafka** | http-down | 1,970 | 1,910 | 39 | 9 | 1,910 | 25.9 |
+| **Kafka** | db-down | 1,935 | 493 | 1,442 | 0 | 493 | 5.9 |
+| **Kafka** | worker-crash | 1,941 | 1,447 | 0 | 0 | 1,447 | 19.5 |
+| **Temporal** | http-down | 1,950 | 710 | 72 | 8 | 709 | 9.6 |
+| **Temporal** | db-down | 1,951 | 756 | 112 | 0 | 755 | 7.7 |
+| **Temporal** | worker-crash | 1,969 | 151 | 1 | 0 | 151 | 2.0 |
+
+### Key Findings
+
+#### Message Loss Under Failure
+
+| Framework | http-down | db-down | worker-crash |
+|-----------|-----------|---------|--------------|
+| RabbitMQ | 1,171 (59%) | 0 | 0 |
+| NATS | 370 (19%) | 0 | 0 |
+| Kafka | 9 (0.5%) | 0 | 0 |
+| Temporal | 8 (0.4%) | 0 | 0 |
+
+- **Kafka and Temporal** lose almost no messages across all scenarios.
+- **RabbitMQ** loses the most under http-down. Quorum queue redelivery is fast, so messages exhaust `maxRetries=5` within the 30s outage window and are routed to the dead-letter exchange.
+- **NATS** loses fewer than RabbitMQ thanks to `ackWait=60s` (slower redelivery cycle), but still loses 370 messages.
+- **All frameworks** recover fully from db-down and worker-crash with zero message loss.
+
+#### Retry Efficiency
+
+| Framework | Retries per processed msg (http-down) | Mechanism |
+|-----------|---------------------------------------|-----------|
+| RabbitMQ | 6.5 | Broker-side Nack + requeue |
+| NATS | 6.8 | Server-side AckWait redelivery |
+| Kafka | 0.02 | In-process retry loop with backoff |
+| Temporal | 0.10 | Workflow-managed activity retry |
+
+Kafka and Temporal retry within the worker process, avoiding broker round-trips. RabbitMQ and NATS rely on broker-side redelivery, which is more aggressive and generates significantly more retry overhead.
+
+#### Duplicate HTTP Calls (Over-Delivery)
+
+When the database is down, the worker calls the downstream HTTP endpoint successfully but fails to record the result. On retry, the HTTP call is made again — this is "over-delivery."
+
+| Framework | Dup HTTP calls (db-down) | Ratio to submitted |
+|-----------|--------------------------|-------------------|
+| RabbitMQ | 1,987 | 1.0x |
+| NATS | 819 | 0.4x |
+| Kafka | 493 | 0.3x |
+| Temporal | 755 | 0.4x |
+
+RabbitMQ generates the most duplicate HTTP calls because its redelivery cycle is the fastest. Kafka generates the fewest because its inner retry loop processes each message to completion (success or max retries) before moving on.
+
+#### Worker Crash Recovery
+
+| Framework | Processed after crash | Notes |
+|-----------|-----------------------|-------|
+| RabbitMQ | 1,497 (75%) | Fast recovery via quorum queue redelivery |
+| NATS | 31,296* | Reprocesses entire unacked backlog after restart |
+| Kafka | 1,447 (75%) | Consumer group rebalancing adds latency |
+| Temporal | 151 (8%) | Worker = workflow starter; crash blocks submission |
+
+*NATS redelivers all unacknowledged messages on worker restart, causing massive reprocessing. The actual unique messages processed is much lower, but each triggers a duplicate HTTP call.
+
+Temporal shows low throughput because the worker also hosts the workflow submission endpoint — killing the worker blocks new job submission during the outage.
+
+### Recommendations
+
+| Use case | Recommended framework | Why |
+|----------|----------------------|-----|
+| General-purpose at-least-once | **Kafka** | Lowest message loss (0.5%), decent throughput, efficient inner retry loop |
+| Minimize duplicate side effects | **Temporal** | Near 1:1 HTTP-to-processed ratio; workflow-level retry prevents redundant calls |
+| High throughput, loss-tolerant | **RabbitMQ** | Fast processing when healthy; increase `maxRetries` to reduce http-down loss |
+| At-least-once delivery | **Avoid NATS** | JetStream delivery semantics are difficult to tune; still loses messages after config optimization |
 
 ## Troubleshooting
 

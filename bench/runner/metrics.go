@@ -12,6 +12,31 @@ import (
 	"time"
 )
 
+// MetricsSnapshot holds the raw counter values at a point in time.
+type MetricsSnapshot struct {
+	ProcessedTotal float64
+	RetryTotal     float64
+	LostTotal      float64
+	DupHTTPTotal   float64
+}
+
+// snapshotCounters captures the current values of all counter metrics for baseline calculation.
+func snapshotCounters(framework string) (MetricsSnapshot, error) {
+	prometheusURL := "http://localhost:9090"
+	var snap MetricsSnapshot
+	var err error
+
+	snap.ProcessedTotal, err = queryMetric(prometheusURL, "bench_processed_total", framework)
+	if err != nil {
+		return snap, err
+	}
+	snap.RetryTotal, _ = queryMetric(prometheusURL, "bench_retry_total", framework)
+	snap.LostTotal, _ = queryMetric(prometheusURL, "bench_lost_total", framework)
+	snap.DupHTTPTotal, _ = queryMetric(prometheusURL, "bench_dup_http_calls_total", framework)
+
+	return snap, nil
+}
+
 // scrapeMetrics queries Prometheus for the metrics of a specific framework.
 func scrapeMetrics(framework string) (map[string]interface{}, error) {
 	prometheusURL := "http://localhost:9090"
@@ -25,7 +50,7 @@ func scrapeMetrics(framework string) (map[string]interface{}, error) {
 	}
 
 	for _, metricName := range metricNames {
-		value, err := queryMetric(prometheusURL, metricName)
+		value, err := queryMetric(prometheusURL, metricName, framework)
 		if err != nil {
 			log.Printf("Warning: failed to query %s: %v", metricName, err)
 			continue
@@ -35,7 +60,7 @@ func scrapeMetrics(framework string) (map[string]interface{}, error) {
 
 	// Also try to get histogram quantiles for latency
 	for _, q := range []string{"0.5", "0.95", "0.99"} {
-		query := fmt.Sprintf("histogram_quantile(%s, rate(bench_latency_seconds_bucket[5m]))", q)
+		query := fmt.Sprintf(`histogram_quantile(%s, rate(bench_latency_seconds_bucket{job="%s-worker"}[5m]))`, q, framework)
 		value, err := queryPrometheus(prometheusURL, query)
 		if err != nil {
 			log.Printf("Warning: failed to query latency quantile %s: %v", q, err)
@@ -47,9 +72,10 @@ func scrapeMetrics(framework string) (map[string]interface{}, error) {
 	return metrics, nil
 }
 
-// queryMetric queries a single metric's current value.
-func queryMetric(prometheusURL, metricName string) (float64, error) {
-	return queryPrometheus(prometheusURL, metricName)
+// queryMetric queries a single metric's current value, filtered by framework.
+func queryMetric(prometheusURL, metricName, framework string) (float64, error) {
+	query := fmt.Sprintf(`%s{job="%s-worker"}`, metricName, framework)
+	return queryPrometheus(prometheusURL, query)
 }
 
 // queryPrometheus sends a PromQL query to Prometheus and returns the first result.

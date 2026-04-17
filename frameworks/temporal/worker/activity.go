@@ -52,6 +52,7 @@ func ProcessJobActivity(ctx context.Context, job proto.Job) (ProcessJobResult, e
 		// Job already processed
 		result.Success = true
 		result.Processed = true
+		benchProcessedTotal.WithLabelValues().Inc()
 		return result, nil
 	}
 
@@ -71,6 +72,14 @@ func ProcessJobActivity(ctx context.Context, job proto.Job) (ProcessJobResult, e
 
 	result.Success = true
 	result.Processed = true
+
+	// Record metrics
+	benchProcessedTotal.WithLabelValues().Inc()
+	if attempt > 1 {
+		benchRetryTotal.WithLabelValues().Inc()
+	}
+	latency := float64(time.Now().UnixMilli()-job.SubmittedAt.UnixMilli()) / 1000.0
+	benchLatencySeconds.WithLabelValues().Observe(latency)
 
 	log.Printf("[Activity %s] Successfully processed job %s", activityID, job.ID)
 	return result, nil
@@ -116,6 +125,14 @@ func callDownstream(ctx context.Context, job proto.Job) bool {
 
 	benchDupHTTPCallsTotal.WithLabelValues().Inc()
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+// RecordLostJobActivity increments the lost job counter.
+// Called from workflow when all retries are exhausted.
+func RecordLostJobActivity(ctx context.Context, jobID string) error {
+	benchLostTotal.WithLabelValues().Inc()
+	log.Printf("Recorded lost job: %s", jobID)
+	return nil
 }
 
 func insertJob(job proto.Job) bool {

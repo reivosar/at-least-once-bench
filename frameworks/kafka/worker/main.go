@@ -189,96 +189,94 @@ func main() {
 }
 
 func consumeLoop(db *sql.DB, brokers []string, workerID int) {
-	for {
-		reader := kafka.NewReader(kafka.ReaderConfig{
-			Brokers:        brokers,
-			Topic:          kafkaTopic,
-			GroupID:        kafkaGroupID,
-			SessionTimeout: 10 * time.Second,
-			ReadBackoffMin: 100 * time.Millisecond,
-			ReadBackoffMax: 1 * time.Second,
-		})
-		defer reader.Close()
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:        brokers,
+		Topic:          kafkaTopic,
+		GroupID:        kafkaGroupID,
+		SessionTimeout: 10 * time.Second,
+		ReadBackoffMin: 100 * time.Millisecond,
+		ReadBackoffMax: 1 * time.Second,
+	})
+	defer reader.Close()
 
-		log.Printf("Worker %d: Started consuming from topic %s", workerID, kafkaTopic)
-		processMessages(db, reader, workerID)
-
-		time.Sleep(time.Second)
-	}
-}
-
-func processMessages(db *sql.DB, reader *kafka.Reader, workerID int) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	log.Printf("Worker %d: Started consuming from topic %s", workerID, kafkaTopic)
 
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		// Read message with timeout
-		readCtx, readCancel := context.WithTimeout(ctx, 5*time.Second)
-		msg, err := reader.ReadMessage(readCtx)
+		// Fetch message without auto-committing offset
+		readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		msg, err := reader.FetchMessage(readCtx)
 		readCancel()
 
 		if err != nil {
-			if err == context.DeadlineExceeded {
-				continue
+			if strings.Contains(err.Error(), "context deadline exceeded") {
+				continue // No messages available, keep polling
 			}
-			log.Printf("Worker %d: Read error: %v", workerID, err)
-			return
-		}
-
-		atomic.AddInt64(&inflightCount, 1)
-		benchInflight.WithLabelValues().Set(float64(atomic.LoadInt64(&inflightCount)))
-
-		var job proto.Job
-		err = json.Unmarshal(msg.Value, &job)
-		if err != nil {
-			log.Printf("Worker %d: Failed to unmarshal job: %v", workerID, err)
-			atomic.AddInt64(&inflightCount, -1)
+			log.Printf("Worker %d: Read error: %v, reconnecting...", workerID, err)
+			reader.Close()
+			time.Sleep(time.Second)
+			reader = kafka.NewReader(kafka.ReaderConfig{
+				Brokers:        brokers,
+				Topic:          kafkaTopic,
+				GroupID:        kafkaGroupID,
+				SessionTimeout: 10 * time.Second,
+				ReadBackoffMin: 100 * time.Millisecond,
+				ReadBackoffMax: 1 * time.Second,
+			})
 			continue
 		}
 
-		// Check if job was already processed (idempotency)
-		var exists bool
-		err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM processed_jobs WHERE job_id = $1)", job.ID).Scan(&exists)
-		if err != nil {
-			log.Printf("Worker %d: Failed to check job existence: %v", workerID, err)
-			atomic.AddInt64(&inflightCount, -1)
-			continue
-		}
+		processMessage(db, reader, msg, workerID)
+	}
+}
 
-		if exists {
-			// Job already processed, commit offset
-			reader.CommitMessages(context.Background(), msg)
-			atomic.AddInt64(&inflightCount, -1)
-			benchProcessedTotal.WithLabelValues().Inc()
-			continue
-		}
-
-		// Process job with inner retry loop
-		processed := processJobWithRetry(db, job, workerID)
-
-		if processed {
-			// Commit offset only after successful processing
-			reader.CommitMessages(context.Background(), msg)
-			benchProcessedTotal.WithLabelValues().Inc()
-
-			// Calculate latency
-			latency := float64(time.Now().UnixMilli()-job.SubmittedAt.UnixMilli()) / 1000.0
-			benchLatencySeconds.WithLabelValues().Observe(latency)
-		} else {
-			// Do not commit offset; message will be redelivered on restart
-			log.Printf("Worker %d: Job %s exceeded max retries, will be redelivered", workerID, job.ID)
-			benchLostTotal.WithLabelValues().Inc()
-			// In real scenario, could continue to try again, but for this benchmark we move on
-		}
-
+func processMessage(db *sql.DB, reader *kafka.Reader, msg kafka.Message, workerID int) {
+	atomic.AddInt64(&inflightCount, 1)
+	benchInflight.WithLabelValues().Set(float64(atomic.LoadInt64(&inflightCount)))
+	defer func() {
 		atomic.AddInt64(&inflightCount, -1)
 		benchInflight.WithLabelValues().Set(float64(atomic.LoadInt64(&inflightCount)))
+	}()
+
+	var job proto.Job
+	err := json.Unmarshal(msg.Value, &job)
+	if err != nil {
+		log.Printf("Worker %d: Failed to unmarshal job: %v", workerID, err)
+		return
+	}
+
+	// Check if job was already processed (idempotency)
+	var exists bool
+	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM processed_jobs WHERE job_id = $1)", job.ID).Scan(&exists)
+	if err != nil {
+		// DB unreachable — don't commit offset, message will be retried
+		log.Printf("Worker %d: Failed to check job existence: %v (will retry)", workerID, err)
+		benchRetryTotal.WithLabelValues().Inc()
+		return
+	}
+
+	if exists {
+		// Job already processed, commit offset
+		reader.CommitMessages(context.Background(), msg)
+		benchProcessedTotal.WithLabelValues().Inc()
+		return
+	}
+
+	// Process job with inner retry loop
+	processed := processJobWithRetry(db, job, workerID)
+
+	if processed {
+		// Commit offset only after successful processing
+		reader.CommitMessages(context.Background(), msg)
+		benchProcessedTotal.WithLabelValues().Inc()
+
+		// Calculate latency
+		latency := float64(time.Now().UnixMilli()-job.SubmittedAt.UnixMilli()) / 1000.0
+		benchLatencySeconds.WithLabelValues().Observe(latency)
+	} else {
+		// Commit offset to avoid infinite reprocessing of poison messages
+		reader.CommitMessages(context.Background(), msg)
+		log.Printf("Worker %d: Job %s exceeded max retries, lost", workerID, job.ID)
+		benchLostTotal.WithLabelValues().Inc()
 	}
 }
 

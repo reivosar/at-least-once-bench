@@ -35,8 +35,8 @@ var (
 	streamName        = "bench-jobs"
 	consumerName      = "bench-consumer"
 	subject           = "jobs"
-	ackWait           = 30 * time.Second
-	maxDeliver        = 5
+	ackWait           = 60 * time.Second
+	maxDeliver        = 20
 	processingTimeout = 30 * time.Second
 
 	// Prometheus metrics
@@ -194,7 +194,29 @@ func main() {
 	} else if err != nil {
 		log.Fatalf("Failed to get consumer info: %v", err)
 	} else {
-		log.Printf("Using existing consumer: %s", consumerName)
+		// Try to update existing consumer config (e.g., ackWait/maxDeliver changed)
+		desiredCfg := &nats.ConsumerConfig{
+			Name:              consumerName,
+			Durable:           consumerName,
+			AckPolicy:         nats.AckExplicitPolicy,
+			AckWait:           ackWait,
+			MaxDeliver:        maxDeliver,
+			DeliverPolicy:     nats.DeliverAllPolicy,
+			InactiveThreshold: 30 * time.Second,
+		}
+		if consumerInfo.Config.AckWait != ackWait || consumerInfo.Config.MaxDeliver != maxDeliver {
+			log.Printf("Consumer config mismatch, deleting and recreating...")
+			if err := js.DeleteConsumer(streamName, consumerName); err != nil {
+				log.Printf("Warning: failed to delete consumer: %v", err)
+			}
+			consumerInfo, err = js.AddConsumer(streamName, desiredCfg)
+			if err != nil {
+				log.Fatalf("Failed to recreate consumer: %v", err)
+			}
+			log.Printf("Recreated consumer: %s", consumerName)
+		} else {
+			log.Printf("Using existing consumer: %s", consumerName)
+		}
 	}
 	_ = consumerInfo
 
@@ -247,7 +269,7 @@ func consumeLoop(db *sql.DB, js nats.JetStreamContext, workerID int) {
 func processMessages(db *sql.DB, sub *nats.Subscription, workerID int) {
 	for {
 		// Fetch messages with timeout
-		msgs, err := sub.Fetch(10, nats.MaxWait(5*time.Second), nats.Context(context.Background()))
+		msgs, err := sub.Fetch(10, nats.MaxWait(5*time.Second))
 		if err != nil && err != nats.ErrTimeout {
 			log.Printf("Worker %d: Fetch error: %v", workerID, err)
 			return
@@ -288,6 +310,12 @@ func processMessages(db *sql.DB, sub *nats.Subscription, workerID int) {
 				continue
 			}
 
+			// Detect redelivery via NATS metadata
+			metadata, metaErr := msg.Metadata()
+			if metaErr == nil && metadata.NumDelivered > 1 {
+				benchRetryTotal.WithLabelValues().Inc()
+			}
+
 			// Process the job: call downstream and write to DB
 			processed := false
 			if callDownstream(job) {
@@ -304,21 +332,12 @@ func processMessages(db *sql.DB, sub *nats.Subscription, workerID int) {
 				latency := float64(time.Now().UnixMilli()-job.SubmittedAt.UnixMilli()) / 1000.0
 				benchLatencySeconds.WithLabelValues().Observe(latency)
 			} else {
-				// Determine if this is a retry
-				if job.Attempt > 1 {
-					benchRetryTotal.WithLabelValues().Inc()
-				}
-
-				// Check metadata for delivery count
-				metadata, err := msg.Metadata()
-				if err == nil && metadata.NumDelivered >= uint64(maxDeliver) {
-					log.Printf("Worker %d: Job %s exceeded max retries (%d), sending to DLQ", workerID, job.ID, maxDeliver)
-					msg.Nak()
+				if metaErr == nil && metadata.NumDelivered >= uint64(maxDeliver) {
+					log.Printf("Worker %d: Job %s exceeded max retries (%d), terminating", workerID, job.ID, maxDeliver)
+					msg.Term() // Terminal ack — stop redelivery
 					benchLostTotal.WithLabelValues().Inc()
 				} else {
-					// Increment attempt and redelivery
-					job.Attempt++
-					msg.Nak()
+					msg.Nak() // Request redelivery
 				}
 			}
 
