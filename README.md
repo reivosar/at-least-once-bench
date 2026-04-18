@@ -157,14 +157,14 @@ All workers export Prometheus metrics:
 - Inner retry loop with exponential backoff (5 attempts) — retries stay in-process, no broker round-trip
 - When DB is unreachable, the idempotency check fails and the message is not committed — it will be retried on the next poll
 - Consumer group rebalancing after worker-crash adds 10-20s of recovery latency
-- Lowest message loss across all scenarios (9 out of ~2,000 in http-down)
+- Lost 9 messages in http-down (0.5%) — likely due to in-flight messages during the outage transition that exhausted the 5-attempt retry budget before the downstream recovered. The in-process retry model keeps this number low but does not eliminate it entirely
 
 ### Temporal
 - Requires a separate PostgreSQL instance (`temporal-db`) for workflow history, proxied through NGINX for fault injection
 - Activity retries managed by the workflow engine: `MaximumAttempts=5`, `InitialInterval=1s`, `BackoffCoefficient=2.0`
 - Failed workflows (all retries exhausted) are recorded via a dedicated `RecordLostJobActivity`
-- Near 1:1 HTTP-to-processed ratio — but this is a direct consequence of workflow-scoped retries: the engine gates external calls, reducing over-delivery at the cost of throughput (2-10 msg/s). This is a **design trade-off**, not a free win.
-- **Critical caveat for db-down**: Temporal requires its own PostgreSQL (`temporal-db`) to persist workflow history. When `temporal-db` is down, new workflow submissions fail at the HTTP POST level — the benchmark runner's `/start-workflow` calls are rejected, and those messages are silently lost with no recovery mechanism. The db-down result showing `lost=0` is misleading: it only counts losses detected by the worker's retry logic, not the ~1,200 messages that were never persisted as workflows in the first place. Only the 756 messages submitted before or after the outage were actually processed.
+- Near 1:1 HTTP-to-processed ratio — a direct consequence of workflow-scoped retries: the engine gates external calls, reducing over-delivery at the cost of throughput (2-10 msg/s)
+- **db-down caveat**: Temporal requires its own PostgreSQL (`temporal-db`) to persist workflow history. When `temporal-db` is down, new workflow submissions fail at the HTTP POST level — the benchmark runner's `/start-workflow` calls are rejected and those messages are lost. The db-down result showing `lost=0` only counts losses detected by the worker's retry logic, not the ~1,200 messages that failed at the submission layer. Only the 756 messages submitted before or after the outage were actually processed. This is analogous to RabbitMQ/NATS/Kafka losing messages when their respective brokers are down — a scenario not tested in this benchmark.
 
 ### RabbitMQ
 - Quorum queues with `x-delivery-count` header for accurate retry tracking
@@ -178,7 +178,7 @@ All workers export Prometheus metrics:
 - Uses `msg.Metadata().NumDelivered` for retry tracking (not the job's internal attempt counter)
 - `msg.Term()` used to stop redelivery when max deliveries are reached
 - On worker restart, all unacknowledged messages are redelivered — can cause massive reprocessing (31k messages for 2k submitted)
-- Still loses 370 messages (19%) in http-down despite tuning — JetStream's delivery semantics are difficult to configure for strict at-least-once guarantees
+- Loses 370 messages (19%) in http-down with the current configuration (`ackWait=60s`, `maxDeliver=20`) — further tuning of these parameters may reduce this number
 
 ## Benchmark Results
 
@@ -201,13 +201,15 @@ All workers export Prometheus metrics:
 | **RabbitMQ** | worker-crash | 1,996 | 1,497 | 0 | 0 | 1,497 | 20.4 |
 | **NATS** | http-down | 1,962 | 1,093 | 7,464 | 370 | 1,093 | 15.0 |
 | **NATS** | db-down | 1,982 | 819 | 31 | 0 | 819 | 9.8 |
-| **NATS** | worker-crash | 1,987 | 31,296 | 0 | 0 | 2,732 | 422.8 |
+| **NATS** | worker-crash | 1,987 | 31,296* | 0 | 0 | 2,732 | 422.8 |
 | **Kafka** | http-down | 1,970 | 1,910 | 39 | 9 | 1,910 | 25.9 |
 | **Kafka** | db-down | 1,935 | 493 | 1,442 | 0 | 493 | 5.9 |
 | **Kafka** | worker-crash | 1,941 | 1,447 | 0 | 0 | 1,447 | 19.5 |
 | **Temporal** | http-down | 1,950 | 710 | 72 | 8 | 709 | 9.6 |
 | **Temporal** | db-down | 1,951 | 756 | 112 | 0 | 755 | 7.7 |
 | **Temporal** | worker-crash | 1,969 | 151 | 1 | 0 | 151 | 2.0 |
+
+\* NATS worker-crash "Processed" count includes massive reprocessing of unacked messages after worker restart — the actual number of unique messages processed is much lower. See [Worker Crash Recovery](#worker-crash-recovery) for details.
 
 ### Key Findings
 
@@ -222,10 +224,10 @@ All workers export Prometheus metrics:
 
 \* Temporal's db-down `lost=0` in the results table only reflects losses counted by the worker's retry logic. In reality, ~1,195 of 1,951 submitted messages failed at the `/start-workflow` HTTP POST level because `temporal-db` was down — these were never persisted as workflows and are permanently lost. The actual loss rate is comparable to RabbitMQ's http-down scenario.
 
-- **Kafka** loses almost no messages across all scenarios — the most reliable framework tested.
+- **Kafka** loses the fewest messages across all scenarios (9 in http-down, 0 in db-down and worker-crash) — a result of its in-process retry model keeping messages in worker memory during retries.
 - **RabbitMQ** loses the most under http-down. Quorum queue redelivery is fast, so messages exhaust `maxRetries=5` within the 30s outage window and are routed to the dead-letter exchange. **Note:** This 59% loss is specific to `maxRetries=5` with no redelivery delay. Adding a delayed requeue (via quorum queue TTL or a delayed exchange plugin) or increasing `maxRetries` would significantly reduce loss. The current result reflects default quorum queue behavior without tuning, not an inherent model weakness.
-- **NATS** loses fewer than RabbitMQ thanks to `ackWait=60s` (slower redelivery cycle), but still loses 370 messages.
-- **Temporal** loses almost nothing under http-down and worker-crash, but is **catastrophically vulnerable to its own DB outage** — messages submitted during the outage are silently dropped with no recovery.
+- **NATS** loses fewer than RabbitMQ in http-down (19% vs 59%) thanks to `ackWait=60s` (slower redelivery cycle), but still loses 370 messages. Like RabbitMQ, this is a broker-side redelivery model — different `ackWait` and `maxDeliver` settings would change the result.
+- **Temporal** loses almost nothing under http-down and worker-crash, but depends on its own DB (`temporal-db`) for workflow persistence — when `temporal-db` is down, new workflow submissions fail and those messages are lost with no recovery mechanism.
 - **RabbitMQ, NATS, and Kafka** recover fully from db-down and worker-crash with zero message loss. Temporal recovers from worker-crash but not from db-down.
 
 #### Retry Efficiency
@@ -254,7 +256,7 @@ Kafka's low loss rate reflects its in-process retry design (the message stays in
 
 #### Duplicate HTTP Calls (Over-Delivery)
 
-When the database is down, the worker calls the downstream HTTP endpoint successfully but fails to record the result. On retry, the HTTP call is made again — this is "over-delivery." The `bench_dup_http_calls_total` counter increments on every successful HTTP call (2xx response), so it measures total downstream invocations, not just redundant ones.
+When the database is down, the worker calls the downstream HTTP endpoint successfully but fails to record the result. On retry, the HTTP call is made again — this is "over-delivery." The `bench_dup_http_calls_total` counter increments on every HTTP call that receives a response (any status code), regardless of whether the response is 2xx. It does not fire when the connection fails entirely (timeout, connection refused). It measures total downstream round-trips, not just redundant or successful ones.
 
 | Framework | Dup HTTP (db-down) | Processed (db-down) | Dup / Processed | Dup HTTP (http-down) | Processed (http-down) | Dup / Processed |
 |-----------|-------------------|--------------------:|----------------:|---------------------|----------------------:|----------------:|
@@ -263,7 +265,7 @@ When the database is down, the worker calls the downstream HTTP endpoint success
 | Kafka | 493 | 493 | 1.0x | 1,910 | 1,910 | 1.0x |
 | Temporal | 755 | 756 | 1.0x | 709 | 710 | 1.0x |
 
-The dup/processed ratio is ~1.0x across all frameworks because the metric fires once per successful HTTP call. The meaningful comparison is the **absolute count**: RabbitMQ's fast redelivery cycle produces 1,987 HTTP calls in db-down (every submitted message hits the downstream at least once), while Kafka's in-process retry limits this to 493. For systems where downstream side effects are expensive or non-idempotent, the absolute dup count — not the ratio — determines the real-world damage from over-delivery.
+The dup/processed ratio is ~1.0x across all frameworks because the metric fires once per HTTP round-trip that receives a response. The meaningful comparison is the **absolute count**: RabbitMQ's fast redelivery cycle produces 1,987 HTTP calls in db-down (every submitted message hits the downstream at least once), while Kafka's in-process retry limits this to 493. For systems where downstream side effects are expensive or non-idempotent, the absolute dup count — not the ratio — determines the real-world damage from over-delivery.
 
 #### Worker Crash Recovery
 
@@ -278,14 +280,16 @@ The dup/processed ratio is ~1.0x across all frameworks because the metric fires 
 
 Temporal shows low throughput because the worker also hosts the workflow submission endpoint — killing the worker blocks new job submission during the outage.
 
-### Recommendations
+### Trade-off Summary
 
-| Use case | Recommended framework | Why |
-|----------|----------------------|-----|
-| General-purpose at-least-once | **Kafka** | Lowest message loss (0.5%), decent throughput, efficient inner retry loop |
-| Minimize duplicate side effects | **Temporal** | Near 1:1 HTTP-to-processed ratio; but requires its own DB to be highly available — db-down causes silent message loss |
-| High throughput, loss-tolerant | **RabbitMQ** | Fast processing when healthy; increase `maxRetries` to reduce http-down loss |
-| At-least-once delivery | **Avoid NATS** | JetStream delivery semantics are difficult to tune; still loses messages after config optimization |
+These results reflect each framework's **default configuration** under the test conditions. Different tuning (retry delays, higher retry budgets, separated submission endpoints) would change the numbers. The table below summarizes the trade-offs observed, not absolute quality rankings.
+
+| Framework | Strength (in this benchmark) | Weakness (in this benchmark) | Key config dependency |
+|-----------|------------------------------|------------------------------|----------------------|
+| **Kafka** | Fewest messages lost (0.5% in http-down) | Low throughput during db-down (5.9 msg/s) due to blocking retry loop | `maxRetries`, backoff timing |
+| **RabbitMQ** | Full recovery from db-down and worker-crash; highest healthy throughput | 59% message loss in http-down due to fast redelivery exhausting retry budget | `maxRetries=5`, no redelivery delay |
+| **NATS** | Lower http-down loss than RabbitMQ (19%) due to slower redelivery cycle | Massive reprocessing on worker restart (31k messages); tuning is non-trivial | `ackWait=60s`, `maxDeliver=20` |
+| **Temporal** | Near 1:1 HTTP-to-processed ratio; minimal over-delivery | Depends on its own DB for persistence — db-down causes submission-level message loss; lowest throughput | `temporal-db` availability, worker architecture |
 
 ### Future Work
 
