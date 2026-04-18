@@ -165,7 +165,7 @@ All workers export Prometheus metrics:
 - Failed workflows (all retries exhausted) are recorded via a dedicated `RecordLostJobActivity`
 - Near 1:1 ratio of HTTP calls to processed messages — minimal over-delivery
 - Lowest throughput (2-10 msg/s) due to workflow engine overhead
-- If Temporal's own DB goes down (tested in db-down scenario), workflows pause and resume automatically on recovery
+- **Critical caveat for db-down**: Temporal requires its own PostgreSQL (`temporal-db`) to persist workflow history. When `temporal-db` is down, new workflow submissions fail at the HTTP POST level — the benchmark runner's `/start-workflow` calls are rejected, and those messages are silently lost with no recovery mechanism. The db-down result showing `lost=0` is misleading: it only counts losses detected by the worker's retry logic, not the ~1,200 messages that were never persisted as workflows in the first place. Only the 756 messages submitted before or after the outage were actually processed.
 
 ### RabbitMQ
 - Quorum queues with `x-delivery-count` header for accurate retry tracking
@@ -219,12 +219,15 @@ All workers export Prometheus metrics:
 | RabbitMQ | 1,171 (59%) | 0 | 0 |
 | NATS | 370 (19%) | 0 | 0 |
 | Kafka | 9 (0.5%) | 0 | 0 |
-| Temporal | 8 (0.4%) | 0 | 0 |
+| Temporal | 8 (0.4%) | ~1,195 (61%)* | 0 |
 
-- **Kafka and Temporal** lose almost no messages across all scenarios.
+\* Temporal's db-down `lost=0` in the results table only reflects losses counted by the worker's retry logic. In reality, ~1,195 of 1,951 submitted messages failed at the `/start-workflow` HTTP POST level because `temporal-db` was down — these were never persisted as workflows and are permanently lost. The actual loss rate is comparable to RabbitMQ's http-down scenario.
+
+- **Kafka** loses almost no messages across all scenarios — the most reliable framework tested.
 - **RabbitMQ** loses the most under http-down. Quorum queue redelivery is fast, so messages exhaust `maxRetries=5` within the 30s outage window and are routed to the dead-letter exchange.
 - **NATS** loses fewer than RabbitMQ thanks to `ackWait=60s` (slower redelivery cycle), but still loses 370 messages.
-- **All frameworks** recover fully from db-down and worker-crash with zero message loss.
+- **Temporal** loses almost nothing under http-down and worker-crash, but is **catastrophically vulnerable to its own DB outage** — messages submitted during the outage are silently dropped with no recovery.
+- **RabbitMQ, NATS, and Kafka** recover fully from db-down and worker-crash with zero message loss. Temporal recovers from worker-crash but not from db-down.
 
 #### Retry Efficiency
 
@@ -268,7 +271,7 @@ Temporal shows low throughput because the worker also hosts the workflow submiss
 | Use case | Recommended framework | Why |
 |----------|----------------------|-----|
 | General-purpose at-least-once | **Kafka** | Lowest message loss (0.5%), decent throughput, efficient inner retry loop |
-| Minimize duplicate side effects | **Temporal** | Near 1:1 HTTP-to-processed ratio; workflow-level retry prevents redundant calls |
+| Minimize duplicate side effects | **Temporal** | Near 1:1 HTTP-to-processed ratio; but requires its own DB to be highly available — db-down causes silent message loss |
 | High throughput, loss-tolerant | **RabbitMQ** | Fast processing when healthy; increase `maxRetries` to reduce http-down loss |
 | At-least-once delivery | **Avoid NATS** | JetStream delivery semantics are difficult to tune; still loses messages after config optimization |
 
