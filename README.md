@@ -163,8 +163,7 @@ All workers export Prometheus metrics:
 - Requires a separate PostgreSQL instance (`temporal-db`) for workflow history, proxied through NGINX for fault injection
 - Activity retries managed by the workflow engine: `MaximumAttempts=5`, `InitialInterval=1s`, `BackoffCoefficient=2.0`
 - Failed workflows (all retries exhausted) are recorded via a dedicated `RecordLostJobActivity`
-- Near 1:1 ratio of HTTP calls to processed messages — minimal over-delivery
-- Lowest throughput (2-10 msg/s) due to workflow engine overhead
+- Near 1:1 HTTP-to-processed ratio — but this is a direct consequence of workflow-scoped retries: the engine gates external calls, reducing over-delivery at the cost of throughput (2-10 msg/s). This is a **design trade-off**, not a free win.
 - **Critical caveat for db-down**: Temporal requires its own PostgreSQL (`temporal-db`) to persist workflow history. When `temporal-db` is down, new workflow submissions fail at the HTTP POST level — the benchmark runner's `/start-workflow` calls are rejected, and those messages are silently lost with no recovery mechanism. The db-down result showing `lost=0` is misleading: it only counts losses detected by the worker's retry logic, not the ~1,200 messages that were never persisted as workflows in the first place. Only the 756 messages submitted before or after the outage were actually processed.
 
 ### RabbitMQ
@@ -224,7 +223,7 @@ All workers export Prometheus metrics:
 \* Temporal's db-down `lost=0` in the results table only reflects losses counted by the worker's retry logic. In reality, ~1,195 of 1,951 submitted messages failed at the `/start-workflow` HTTP POST level because `temporal-db` was down — these were never persisted as workflows and are permanently lost. The actual loss rate is comparable to RabbitMQ's http-down scenario.
 
 - **Kafka** loses almost no messages across all scenarios — the most reliable framework tested.
-- **RabbitMQ** loses the most under http-down. Quorum queue redelivery is fast, so messages exhaust `maxRetries=5` within the 30s outage window and are routed to the dead-letter exchange.
+- **RabbitMQ** loses the most under http-down. Quorum queue redelivery is fast, so messages exhaust `maxRetries=5` within the 30s outage window and are routed to the dead-letter exchange. **Note:** This 59% loss is specific to `maxRetries=5` with no redelivery delay. Adding a delayed requeue (via quorum queue TTL or a delayed exchange plugin) or increasing `maxRetries` would significantly reduce loss. The current result reflects default quorum queue behavior without tuning, not an inherent model weakness.
 - **NATS** loses fewer than RabbitMQ thanks to `ackWait=60s` (slower redelivery cycle), but still loses 370 messages.
 - **Temporal** loses almost nothing under http-down and worker-crash, but is **catastrophically vulnerable to its own DB outage** — messages submitted during the outage are silently dropped with no recovery.
 - **RabbitMQ, NATS, and Kafka** recover fully from db-down and worker-crash with zero message loss. Temporal recovers from worker-crash but not from db-down.
@@ -240,18 +239,31 @@ All workers export Prometheus metrics:
 
 Kafka and Temporal retry within the worker process, avoiding broker round-trips. RabbitMQ and NATS rely on broker-side redelivery, which is more aggressive and generates significantly more retry overhead.
 
+#### Retry Responsibility Model
+
+The four frameworks place retry responsibility at fundamentally different layers. The benchmark results reflect these architectural choices — not inherent quality differences.
+
+| Framework | Retry layer | Retry location | Consequence |
+|-----------|-------------|----------------|-------------|
+| Kafka | Application | In-process loop with backoff | Message never leaves worker during retry — low broker overhead, low loss, but failure is invisible to the broker |
+| RabbitMQ | Broker | Nack + requeue to quorum queue | Broker controls redelivery — fast cycling exhausts `maxRetries` during sustained outages |
+| NATS | Broker | Server-side AckWait expiry | Similar to RabbitMQ but timer-based — slower cycle (60s) reduces loss vs instant requeue |
+| Temporal | Workflow engine | Activity retry within workflow execution | Retries are scoped to the workflow — external side effects are gated, but throughput is throttled by engine overhead |
+
+Kafka's low loss rate reflects its in-process retry design (the message stays in the worker's memory during retries), not inherent broker superiority. RabbitMQ's high loss reflects aggressive broker-side redelivery under the test's `maxRetries=5` setting, not a fundamental model weakness. **These are architectural trade-offs, not quality rankings.** A fairer comparison would normalize retry budgets and add redelivery delays to broker-side frameworks.
+
 #### Duplicate HTTP Calls (Over-Delivery)
 
-When the database is down, the worker calls the downstream HTTP endpoint successfully but fails to record the result. On retry, the HTTP call is made again — this is "over-delivery."
+When the database is down, the worker calls the downstream HTTP endpoint successfully but fails to record the result. On retry, the HTTP call is made again — this is "over-delivery." The `bench_dup_http_calls_total` counter increments on every successful HTTP call (2xx response), so it measures total downstream invocations, not just redundant ones.
 
-| Framework | Dup HTTP calls (db-down) | Ratio to submitted |
-|-----------|--------------------------|-------------------|
-| RabbitMQ | 1,987 | 1.0x |
-| NATS | 819 | 0.4x |
-| Kafka | 493 | 0.3x |
-| Temporal | 755 | 0.4x |
+| Framework | Dup HTTP (db-down) | Processed (db-down) | Dup / Processed | Dup HTTP (http-down) | Processed (http-down) | Dup / Processed |
+|-----------|-------------------|--------------------:|----------------:|---------------------|----------------------:|----------------:|
+| RabbitMQ | 1,987 | 1,987 | 1.0x | 808 | 808 | 1.0x |
+| NATS | 819 | 819 | 1.0x | 1,093 | 1,093 | 1.0x |
+| Kafka | 493 | 493 | 1.0x | 1,910 | 1,910 | 1.0x |
+| Temporal | 755 | 756 | 1.0x | 709 | 710 | 1.0x |
 
-RabbitMQ generates the most duplicate HTTP calls because its redelivery cycle is the fastest. Kafka generates the fewest because its inner retry loop processes each message to completion (success or max retries) before moving on.
+The dup/processed ratio is ~1.0x across all frameworks because the metric fires once per successful HTTP call. The meaningful comparison is the **absolute count**: RabbitMQ's fast redelivery cycle produces 1,987 HTTP calls in db-down (every submitted message hits the downstream at least once), while Kafka's in-process retry limits this to 493. For systems where downstream side effects are expensive or non-idempotent, the absolute dup count — not the ratio — determines the real-world damage from over-delivery.
 
 #### Worker Crash Recovery
 
@@ -274,6 +286,15 @@ Temporal shows low throughput because the worker also hosts the workflow submiss
 | Minimize duplicate side effects | **Temporal** | Near 1:1 HTTP-to-processed ratio; but requires its own DB to be highly available — db-down causes silent message loss |
 | High throughput, loss-tolerant | **RabbitMQ** | Fast processing when healthy; increase `maxRetries` to reduce http-down loss |
 | At-least-once delivery | **Avoid NATS** | JetStream delivery semantics are difficult to tune; still loses messages after config optimization |
+
+### Future Work
+
+The current benchmark tests each framework's default/typical configuration. Variant configurations would isolate whether observed differences are architectural or configuration-dependent:
+
+- **RabbitMQ with delayed retry**: Add redelivery delay via delayed exchange plugin or quorum queue TTL — expected to dramatically reduce http-down loss
+- **Kafka with broker-side retry**: Disable in-process retry loop, rely on offset non-commit for redelivery — would make Kafka behave more like RabbitMQ/NATS
+- **Temporal with separated submission**: Decouple workflow starter from worker process — would fix worker-crash throughput drop
+- **All frameworks with higher maxRetries**: Normalize retry budgets across frameworks for a fairer comparison
 
 ## Troubleshooting
 
