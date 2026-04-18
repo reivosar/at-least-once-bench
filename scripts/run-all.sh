@@ -95,9 +95,9 @@ for framework in "${FRAMEWORK_LIST[@]}"; do
         REPORT_FILE="results/${TEST_NAME}.json"
 
         echo ""
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "--------------------------------------------------------------"
         echo "Running: $TEST_NAME"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "--------------------------------------------------------------"
 
         CMD="CGO_ENABLED=0 go run $RUNNER \
             --framework=$framework \
@@ -114,12 +114,12 @@ for framework in "${FRAMEWORK_LIST[@]}"; do
             echo "[DRY RUN] $CMD"
         else
             if eval "$CMD"; then
-                echo "✅ PASSED: $TEST_NAME"
+                echo "PASSED: $TEST_NAME"
                 PASSED_TESTS=$((PASSED_TESTS + 1))
 
                 # Display summary
                 if [ -f "$REPORT_FILE" ]; then
-                    echo "📊 Report: $REPORT_FILE"
+                    echo "Report: $REPORT_FILE"
                     if command -v jq &> /dev/null; then
                         jq -r '.jobs_processed, .jobs_lost, .throughput' "$REPORT_FILE" 2>/dev/null | \
                             paste -d' ' - - - | \
@@ -127,7 +127,7 @@ for framework in "${FRAMEWORK_LIST[@]}"; do
                     fi
                 fi
             else
-                echo "❌ FAILED: $TEST_NAME"
+                echo "FAILED: $TEST_NAME"
                 FAILED_TESTS=$((FAILED_TESTS + 1))
             fi
         fi
@@ -136,12 +136,12 @@ done
 
 # Summary
 echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "--------------------------------------------------------------"
 echo "Summary"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "--------------------------------------------------------------"
 echo "Total tests: $TOTAL_TESTS"
-echo "Passed: ✅ $PASSED_TESTS"
-echo "Failed: ❌ $FAILED_TESTS"
+echo "Passed: $PASSED_TESTS"
+echo "Failed: $FAILED_TESTS"
 
 if [ $FAILED_TESTS -gt 0 ]; then
     exit 1
